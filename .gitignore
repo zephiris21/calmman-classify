@@ -1,0 +1,123 @@
+# ==========================================
+# 얼굴표정 분류 프로젝트 .gitignore
+# ==========================================
+
+# 가상환경 폴더
+calm-env/
+venv/
+env/
+ENV/
+.venv/
+
+# Python 캐시 및 컴파일 파일
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 데이터 파일 (용량이 큰 경우)
+data/raw/
+data/processed/teasing/
+data/processed/non_teasing/
+data/processed/test_image/
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.webp
+*.gif
+
+# 훈련된 모델 파일
+models/*.h5
+models/*.pkl
+models/*.pt
+models/*.pth
+models/*.ckpt
+*.h5
+*.pkl
+*.pt
+*.pth
+
+# Jupyter Notebook 체크포인트
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# 로그 파일
+logs/
+*.log
+
+# 환경설정 파일
+.env
+.env.local
+.env.*.local
+config.json
+secrets.json
+
+# IDE 설정 파일
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 운영체제 생성 파일
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 임시 파일
+temp/
+tmp/
+*.tmp
+*.temp
+
+# 백업 파일
+*.bak
+*.backup
+
+# 압축 파일
+*.zip
+*.rar
+*.7z
+*.tar.gz
+
+# 텐서보드 로그
+runs/
+tensorboard/
+
+# MLflow 실험 추적
+mlruns/
+.mlflow/
+
+# 기타 머신러닝 관련
+wandb/
+.neptune/
+checkpoints/
+
+# 프로젝트별 특수 폴더
+results/
+outputs/
+experiments/
