@@ -1,0 +1,41 @@
+# Calmman 얼굴 분류 시스템 설정
+
+# 비디오 처리 설정
+video:
+  frame_skip: 30              # 몇 프레임마다 처리할지 (30 = 1초에 1프레임 처리)
+  chunk_duration: 600         # 청크 길이 (초) - 10분 단위
+  
+# MTCNN 얼굴 탐지 설정  
+mtcnn:
+  batch_size: 64              # GPU 배치 처리 크기 (메모리 여유로 증가)
+  image_size: 224             # 출력 이미지 크기
+  margin: 20                  # 얼굴 주변 여백
+  prob_threshold: 0.9         # 얼굴 탐지 확률 임계값
+  align_faces: true           # 눈 정렬 활성화
+
+# 분류 모델 설정
+classifier:
+  model_path: "models/efficientnet_teasing_classifier.h5"
+  workers: 8                  # CPU 분류 프로세스 수
+  batch_size: 16              # 분류 배치 크기
+  confidence_threshold: 0.8   # 킹받는 판정 임계값
+
+# 성능 관리 설정
+performance:
+  max_queue_size: 500         # 프레임 버퍼 최대 크기 (메모리 여유 있으니 증가)
+  max_ram_gb: 30              # RAM 사용 제한 (GB) - 35GB 여유분 중 30GB 활용
+  max_vram_gb: 14             # VRAM 사용 제한 (GB)
+  monitoring_interval: 5      # 성능 모니터링 간격 (초)
+
+# 출력 설정
+output:
+  save_highlights: true       # 킹받는 프레임 이미지 저장 여부
+  save_timestamps: true       # 타임스탬프 JSON 저장 여부
+  highlights_dir: "results/highlights"
+  timestamps_dir: "results/timestamps"
+  
+# 디버깅 설정
+debug:
+  verbose: true               # 상세 로그 출력
+  save_intermediate: false    # 중간 결과 저장 (디버깅용)
+  performance_log: true       # 성능 로그 기록
