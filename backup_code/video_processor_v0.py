@@ -450,31 +450,13 @@ class CalmmanVideoProcessor:
 def main():
     """메인 실행 함수"""
     import sys
-    import argparse
     
-    # 명령줄 인자 파싱
-    parser = argparse.ArgumentParser(description='침착맨 킹받는 순간 탐지')
-    parser.add_argument('filename', nargs='?', help='처리할 비디오 파일명 (확장자 포함)')
-    parser.add_argument('--dir', '--directory', help='비디오 파일 디렉토리 경로')
-    
-    args = parser.parse_args()
+    # 기본 설정
+    video_path = "yt_download/downloads/시청자 취미 구경하기.mp4"
     
     try:
         # 프로세서 초기화
         processor = CalmmanVideoProcessor()
-        
-        # 비디오 경로 결정
-        if args.filename:
-            # 명령줄에서 파일명 제공
-            video_dir = args.dir if args.dir else processor.config['video']['default_directory']
-            video_path = os.path.join(video_dir, args.filename)
-        else:
-            # config에서 기본값 사용
-            video_dir = processor.config['video']['default_directory']
-            video_filename = processor.config['video']['default_filename']
-            video_path = os.path.join(video_dir, video_filename)
-        
-        print(f"🎬 처리할 영상: {video_path}")
         
         # 비디오 처리
         results = processor.process_video(video_path)

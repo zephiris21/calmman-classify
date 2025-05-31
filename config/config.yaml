@@ -4,7 +4,10 @@
 video:
   frame_skip: 30              # 몇 프레임마다 처리할지 (30 = 1초에 1프레임 처리)
   chunk_duration: 600         # 청크 길이 (초) - 10분 단위
-  
+
+  default_directory: "yt_download/downloads"                  # 처리할 비디오 경로
+  default_filename: "직장인들이 사랑하는 생선구이 먹방.mp4"      # 처리할 비디오 파일명
+
 # MTCNN 얼굴 탐지 설정  
 mtcnn:
   batch_size: 64              # GPU 배치 처리 크기 (메모리 여유로 증가)
@@ -18,7 +21,7 @@ classifier:
   model_path: "models/efficientnet_teasing_classifier.h5"
   workers: 8                  # CPU 분류 프로세스 수
   batch_size: 16              # 분류 배치 크기
-  confidence_threshold: 0.8   # 킹받는 판정 임계값
+  confidence_threshold: 0.9   # 킹받는 판정 임계값
 
 # 성능 관리 설정
 performance:
