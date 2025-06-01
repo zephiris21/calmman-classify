@@ -14,7 +14,10 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 from PIL import Image
+from facenet_pytorch import InceptionResnetV1
 
 from mtcnn_wrapper import FaceDetector
 from pytorch_classifier import TorchFacialClassifier
@@ -23,6 +26,7 @@ from pytorch_classifier import TorchFacialClassifier
 class TorchVideoProcessor:
     """
     PyTorch 기반 침착맨 킹받는 순간 탐지를 위한 비디오 프로세서
+    얼굴 인식 기능 통합
     """
     
     def __init__(self, config_path: str = "config/config_torch.yaml"):
@@ -42,11 +46,14 @@ class TorchVideoProcessor:
         self.stats = {
             'frames_processed': 0,
             'faces_detected': 0,
+            'faces_recognized': 0,      # 새로 추가: 인식된 얼굴 수
+            'faces_filtered': 0,        # 새로 추가: 필터링된 얼굴 수
             'angry_moments': 0,
             'processing_start_time': None,
             'last_stats_time': time.time(),
             'batch_count': 0,
-            'total_inference_time': 0
+            'total_inference_time': 0,
+            'total_recognition_time': 0  # 새로 추가: 얼굴 인식 시간
         }
         
         # 종료 플래그 추가
@@ -61,6 +68,9 @@ class TorchVideoProcessor:
         
         # 얼굴 탐지기 초기화
         self._init_face_detector()
+        
+        # 얼굴 인식 모델 초기화 (옵션)
+        self._init_face_recognition()
         
         # PyTorch 분류 모델 로드
         self._load_classifier()
@@ -129,6 +139,44 @@ class TorchVideoProcessor:
         
         self.logger.info(f"✅ MTCNN 초기화 완료 (배치 크기: {mtcnn_config['batch_size']})")
     
+    def _init_face_recognition(self):
+        """FaceNet 얼굴 인식 모델 초기화"""
+        face_recog_config = self.config.get('face_recognition', {})
+        
+        if not face_recog_config.get('enabled', False):
+            self.logger.info("⚠️ 얼굴 인식 비활성화됨")
+            self.facenet_model = None
+            self.target_embedding = None
+            return
+        
+        try:
+            # 디바이스 설정
+            device = torch.device(face_recog_config.get('device', 'cuda') 
+                                 if torch.cuda.is_available() else 'cpu')
+            
+            # FaceNet 모델 로드
+            self.facenet_model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+            
+            # 타겟 임베딩 로드
+            embedding_path = face_recog_config['embedding_path']
+            if os.path.exists(embedding_path):
+                embedding_data = np.load(embedding_path, allow_pickle=True).item()
+                self.target_embedding = torch.tensor(embedding_data['embedding']).to(device)
+                
+                self.logger.info(f"✅ 얼굴 인식 초기화 완료")
+                self.logger.info(f"   임베딩 파일: {embedding_path}")
+                self.logger.info(f"   사용된 이미지: {embedding_data['num_images']}개")
+                self.logger.info(f"   유사도 임계값: {face_recog_config['similarity_threshold']}")
+            else:
+                self.logger.error(f"❌ 임베딩 파일을 찾을 수 없습니다: {embedding_path}")
+                self.facenet_model = None
+                self.target_embedding = None
+                
+        except Exception as e:
+            self.logger.error(f"❌ 얼굴 인식 초기화 실패: {e}")
+            self.facenet_model = None
+            self.target_embedding = None
+    
     def _load_classifier(self):
         """PyTorch 분류 모델 로드"""
         try:
@@ -176,10 +224,76 @@ class TorchVideoProcessor:
         self.logger.info("📋 설정 요약:")
         self.logger.info(f"   프레임 스킵: {self.config['video']['frame_skip']}프레임마다")
         self.logger.info(f"   MTCNN 배치: {self.config['mtcnn']['batch_size']}")
+        
+        # 얼굴 인식 설정 출력
+        if self.config.get('face_recognition', {}).get('enabled', False):
+            face_recog_config = self.config['face_recognition']
+            self.logger.info(f"   얼굴 인식: 활성화 (임계값: {face_recog_config['similarity_threshold']})")
+        else:
+            self.logger.info(f"   얼굴 인식: 비활성화")
+            
         self.logger.info(f"   분류 배치: {self.config['classifier']['batch_size']}")
         self.logger.info(f"   배치 타임아웃: {self.config['classifier']['batch_timeout']}초")
         self.logger.info(f"   큐 크기: {self.config['performance']['max_queue_size']}")
         self.logger.info(f"   디바이스: {self.config['classifier']['device']}")
+    
+    def _get_face_embeddings_batch(self, face_images: List[Image.Image]) -> torch.Tensor:
+        """
+        얼굴 이미지 배치에서 임베딩 추출
+        
+        Args:
+            face_images (List[PIL.Image]): 224x224 얼굴 이미지들
+            
+        Returns:
+            torch.Tensor: 정규화된 임베딩 벡터들 [batch_size, 512]
+        """
+        if self.facenet_model is None:
+            return None
+        
+        try:
+            # 224x224 → 160x160 리사이징 (FaceNet용)
+            resized_images = []
+            for face_img in face_images:
+                resized_img = face_img.resize((160, 160), Image.BILINEAR)
+                img_array = np.array(resized_img)
+                img_tensor = torch.from_numpy(img_array).float().permute(2, 0, 1)
+                img_tensor = (img_tensor - 127.5) / 128.0  # 정규화 [-1, 1]
+                resized_images.append(img_tensor)
+            
+            # 배치 텐서 생성
+            batch_tensor = torch.stack(resized_images).to(self.target_embedding.device)
+            
+            # 임베딩 추출
+            with torch.no_grad():
+                embeddings = self.facenet_model(batch_tensor)
+                embeddings = F.normalize(embeddings, p=2, dim=1)  # L2 정규화
+            
+            return embeddings
+            
+        except Exception as e:
+            self.logger.error(f"배치 임베딩 추출 실패: {e}")
+            return None
+    
+    def _calculate_similarities_batch(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        배치 임베딩과 타겟 임베딩 간의 유사도 계산
+        
+        Args:
+            embeddings (torch.Tensor): 배치 임베딩 [batch_size, 512]
+            
+        Returns:
+            torch.Tensor: 유사도 값들 [batch_size]
+        """
+        if embeddings is None or self.target_embedding is None:
+            return None
+        
+        # 타겟 임베딩을 배치 크기로 확장
+        target_expanded = self.target_embedding.unsqueeze(0).repeat(embeddings.size(0), 1)
+        
+        # 코사인 유사도 계산
+        similarities = F.cosine_similarity(embeddings, target_expanded)
+        
+        return similarities
     
     def process_video(self, video_path: str) -> Dict:
         """
@@ -353,7 +467,7 @@ class TorchVideoProcessor:
             self.logger.info("✅ 얼굴 탐지 완료")
     
     def _process_face_batch(self, frame_batch: List[Dict]):
-        """프레임 배치에서 얼굴 탐지 (MTCNN 배치 처리 활용)"""
+        """프레임 배치에서 얼굴 탐지 및 인식 (MTCNN + FaceNet 배치 처리)"""
         batch_start_time = time.time()
         
         try:
@@ -376,10 +490,14 @@ class TorchVideoProcessor:
                 self.logger.warning("⚠️ 변환된 이미지가 없습니다")
                 return
             
-            # MTCNN 배치 처리 호출
+            # MTCNN 배치 처리 호출 (224x224 얼굴 이미지 추출)
             face_results = self.face_detector.process_image_batch(
                 pil_images, frame_metadata_list
             )
+            
+            # 얼굴 인식 활성화된 경우 필터링 수행
+            if self.config.get('face_recognition', {}).get('enabled', False) and self.facenet_model is not None:
+                face_results = self._filter_faces_by_recognition(face_results)
             
             # 결과를 face_queue에 추가
             faces_in_batch = 0
@@ -399,14 +517,20 @@ class TorchVideoProcessor:
             
             # 통계 업데이트
             self.stats['frames_processed'] += len(frame_batch)
-            self.stats['faces_detected'] += faces_in_batch
+            self.stats['faces_detected'] += len([r for r in face_results if 'face_image' in r])
             
             batch_time = time.time() - batch_start_time
             
             # 배치 단위 로깅
             if self.config['logging']['batch_summary']:
+                recognition_info = ""
+                if self.config.get('face_recognition', {}).get('enabled', False):
+                    total_detected = len([r for r in self.face_detector.process_image_batch(pil_images, frame_metadata_list) if 'face_image' in r])
+                    filtered = total_detected - faces_in_batch
+                    recognition_info = f" (인식 후: {faces_in_batch}개, 필터링: {filtered}개)"
+                
                 self.logger.info(
-                    f"얼굴 탐지 배치: {len(frame_batch)}프레임 → {faces_in_batch}개 얼굴 "
+                    f"얼굴 탐지 배치: {len(frame_batch)}프레임 → {faces_in_batch}개 얼굴{recognition_info} "
                     f"({batch_time:.2f}초)"
                 )
         
@@ -414,6 +538,89 @@ class TorchVideoProcessor:
             self.logger.error(f"❌ 얼굴 탐지 배치 처리 실패: {e}")
             # 실패 시에도 통계는 업데이트
             self.stats['frames_processed'] += len(frame_batch)
+    
+    def _filter_faces_by_recognition(self, face_results: List[Dict]) -> List[Dict]:
+        """
+        얼굴 인식으로 침착맨 얼굴만 필터링
+        
+        Args:
+            face_results (List[Dict]): MTCNN 탐지 결과
+            
+        Returns:
+            List[Dict]: 필터링된 얼굴 결과
+        """
+        if not face_results or self.facenet_model is None:
+            return face_results
+        
+        try:
+            recognition_start_time = time.time()
+            
+            # 얼굴 이미지들 추출
+            face_images = [result['face_image'] for result in face_results]
+            
+            # 배치 임베딩 추출
+            embeddings = self._get_face_embeddings_batch(face_images)
+            
+            if embeddings is None:
+                return face_results
+            
+            # 배치 유사도 계산
+            similarities = self._calculate_similarities_batch(embeddings)
+            
+            if similarities is None:
+                return face_results
+            
+            # 임계값 기준으로 필터링
+            threshold = self.config['face_recognition']['similarity_threshold']
+            matches = similarities > threshold
+            
+            # 필터링된 결과 생성
+            filtered_results = []
+            recognized_count = 0
+            
+            for i, (result, similarity, is_match) in enumerate(zip(face_results, similarities, matches)):
+                if is_match:
+                    # 유사도 정보 추가
+                    result['similarity'] = float(similarity)
+                    filtered_results.append(result)
+                    recognized_count += 1
+                else:
+                    # 필터링된 얼굴 저장 (옵션)
+                    if self.config['face_recognition']['logging']['save_filtered_faces']:
+                        self._save_filtered_face(result, float(similarity))
+            
+            recognition_time = time.time() - recognition_start_time
+            self.stats['total_recognition_time'] += recognition_time
+            self.stats['faces_recognized'] += recognized_count
+            self.stats['faces_filtered'] += (len(face_results) - recognized_count)
+            
+            # 인식 통계 로깅
+            if self.config['face_recognition']['logging']['log_filtered_count']:
+                self.logger.debug(
+                    f"얼굴 인식: {len(face_results)}개 → {recognized_count}개 "
+                    f"(필터링: {len(face_results) - recognized_count}개, {recognition_time:.3f}초)"
+                )
+            
+            return filtered_results
+            
+        except Exception as e:
+            self.logger.error(f"❌ 얼굴 인식 필터링 실패: {e}")
+            return face_results  # 실패 시 원본 반환
+    
+    def _save_filtered_face(self, face_data: Dict, similarity: float):
+        """필터링된 얼굴 이미지 저장 (디버깅용)"""
+        try:
+            timestamp_str = f"{int(face_data['timestamp']):05d}"
+            filename = f"filtered_{timestamp_str}_{similarity:.3f}.jpg"
+            
+            filtered_dir = os.path.join(self.video_output_dir, "filtered_faces")
+            os.makedirs(filtered_dir, exist_ok=True)
+            
+            save_path = os.path.join(filtered_dir, filename)
+            face_data['face_image'].save(save_path)
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ 필터링된 얼굴 저장 실패: {e}")
     
     def _batch_classification_worker(self):
         """배치 분류 워커"""
@@ -494,6 +701,10 @@ class TorchVideoProcessor:
                         'confidence': prediction['confidence']
                     }
                     
+                    # 얼굴 인식 유사도 정보 추가 (있는 경우)
+                    if 'similarity' in face_data:
+                        angry_moment['similarity'] = face_data['similarity']
+                    
                     self.angry_moments.append(angry_moment)
                     self.stats['angry_moments'] += 1
                     angry_count += 1
@@ -504,7 +715,8 @@ class TorchVideoProcessor:
                     
                     if self.config['debug']['timing_detailed']:
                         timestamp_str = str(timedelta(seconds=int(face_data['timestamp'])))
-                        self.logger.info(f"😡 킹받는 순간! {timestamp_str} (신뢰도: {prediction['confidence']:.3f})")
+                        similarity_info = f", 유사도: {face_data.get('similarity', 'N/A'):.3f}" if 'similarity' in face_data else ""
+                        self.logger.info(f"😡 킹받는 순간! {timestamp_str} (신뢰도: {prediction['confidence']:.3f}{similarity_info})")
             
         except Exception as e:
             self.logger.error(f"⚠️ 배치 분류 오류: {e}")
@@ -513,7 +725,8 @@ class TorchVideoProcessor:
         """킹받는 순간 이미지 저장"""
         try:
             timestamp_str = f"{int(face_data['timestamp']):05d}"
-            filename = f"angry_{timestamp_str}_{confidence:.3f}.jpg"
+            similarity_str = f"_{face_data['similarity']:.3f}" if 'similarity' in face_data else ""
+            filename = f"angry_{timestamp_str}_{confidence:.3f}{similarity_str}.jpg"
             
             save_path = os.path.join(
                 self.video_output_dir,
@@ -551,6 +764,13 @@ class TorchVideoProcessor:
                 avg_batch_time = (self.stats['total_inference_time'] / self.stats['batch_count'] 
                                  if self.stats['batch_count'] > 0 else 0)
                 
+                # 얼굴 인식 통계 추가
+                recognition_info = ""
+                if self.config.get('face_recognition', {}).get('enabled', False):
+                    recognition_rate = (self.stats['faces_recognized'] / max(1, self.stats['faces_detected'])) * 100
+                    avg_recognition_time = (self.stats['total_recognition_time'] / max(1, self.stats['batch_count']))
+                    recognition_info = f", 인식률: {recognition_rate:.1f}%, 인식시간: {avg_recognition_time:.3f}초"
+                
                 self.logger.info(
                     f"📊 [{elapsed:.1f}s] "
                     f"프레임: {self.stats['frames_processed']} ({fps:.1f} FPS), "
@@ -558,7 +778,7 @@ class TorchVideoProcessor:
                     f"킹받음: {self.stats['angry_moments']}, "
                     f"큐: {frame_queue_size}/{face_queue_size}, "
                     f"GPU: {memory_info['allocated']:.1f}GB, "
-                    f"배치 평균: {avg_batch_time:.3f}초"
+                    f"배치 평균: {avg_batch_time:.3f}초{recognition_info}"
                 )
         
         self.logger.info("📊 성능 모니터링 종료")
@@ -600,6 +820,15 @@ class TorchVideoProcessor:
         self.logger.info(f"   총 처리 시간: {elapsed:.1f}초")
         self.logger.info(f"   처리된 프레임: {self.stats['frames_processed']}개 ({fps:.1f} FPS)")
         self.logger.info(f"   탐지된 얼굴: {self.stats['faces_detected']}개")
+        
+        # 얼굴 인식 통계 출력
+        if self.config.get('face_recognition', {}).get('enabled', False):
+            recognition_rate = (self.stats['faces_recognized'] / max(1, self.stats['faces_detected'])) * 100
+            avg_recognition_time = (self.stats['total_recognition_time'] / max(1, self.stats['batch_count']))
+            self.logger.info(f"   인식된 얼굴: {self.stats['faces_recognized']}개 ({recognition_rate:.1f}%)")
+            self.logger.info(f"   필터링된 얼굴: {self.stats['faces_filtered']}개")
+            self.logger.info(f"   평균 인식 시간: {avg_recognition_time:.3f}초/배치")
+        
         self.logger.info(f"   킹받는 순간: {self.stats['angry_moments']}개")
         self.logger.info(f"   분류 배치: {self.stats['batch_count']}회 (평균 {avg_batch_time:.3f}초)")
         
@@ -614,7 +843,7 @@ def main():
     import argparse
     
     # 명령줄 인자 파싱
-    parser = argparse.ArgumentParser(description='침착맨 킹받는 순간 탐지 (PyTorch)')
+    parser = argparse.ArgumentParser(description='침착맨 킹받는 순간 탐지 (PyTorch + 얼굴 인식)')
     parser.add_argument('filename', nargs='?', help='처리할 비디오 파일명 (확장자 포함)')
     parser.add_argument('--dir', '--directory', help='비디오 파일 디렉토리 경로')
     parser.add_argument('--config', default='config/config_torch.yaml', help='설정 파일 경로')
