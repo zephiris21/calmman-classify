@@ -25,7 +25,7 @@ class TorchVideoProcessor:
     PyTorch 기반 침착맨 킹받는 순간 탐지를 위한 비디오 프로세서
     """
     
-    def __init__(self, config_path: str = "../config/config_torch.yaml"):
+    def __init__(self, config_path: str = "config/config_torch.yaml"):
         """
         비디오 프로세서 초기화
         
@@ -353,42 +353,67 @@ class TorchVideoProcessor:
             self.logger.info("✅ 얼굴 탐지 완료")
     
     def _process_face_batch(self, frame_batch: List[Dict]):
-        """프레임 배치에서 얼굴 탐지"""
+        """프레임 배치에서 얼굴 탐지 (MTCNN 배치 처리 활용)"""
         batch_start_time = time.time()
-        faces_in_batch = 0
         
-        for frame_data in frame_batch:
-            try:
-                # PIL 이미지로 변환
-                pil_image = Image.fromarray(frame_data['frame'])
-                
-                # 얼굴 탐지
-                face_images = self.face_detector.process_image(pil_image)
-                
-                if face_images:
-                    for face_img in face_images:
-                        face_data = {
-                            'face_image': face_img,
-                            'frame_number': frame_data['frame_number'],
-                            'timestamp': frame_data['timestamp']
-                        }
-                        self.face_queue.put(face_data)
-                        faces_in_batch += 1
-                
-                self.stats['frames_processed'] += 1
-                
-            except Exception as e:
-                self.logger.warning(f"⚠️ 프레임 {frame_data['frame_number']} 처리 실패: {e}")
-        
-        batch_time = time.time() - batch_start_time
-        self.stats['faces_detected'] += faces_in_batch
-        
-        # 배치 단위 로깅
-        if self.config['logging']['batch_summary']:
-            self.logger.info(
-                f"얼굴 탐지 배치: {len(frame_batch)}프레임 → {faces_in_batch}개 얼굴 "
-                f"({batch_time:.2f}초)"
+        try:
+            # PIL 이미지 리스트와 메타데이터 준비
+            pil_images = []
+            frame_metadata_list = []
+            
+            for frame_data in frame_batch:
+                try:
+                    pil_image = Image.fromarray(frame_data['frame'])
+                    pil_images.append(pil_image)
+                    frame_metadata_list.append({
+                        'frame_number': frame_data['frame_number'],
+                        'timestamp': frame_data['timestamp']
+                    })
+                except Exception as e:
+                    self.logger.warning(f"⚠️ 프레임 {frame_data['frame_number']} PIL 변환 실패: {e}")
+            
+            if not pil_images:
+                self.logger.warning("⚠️ 변환된 이미지가 없습니다")
+                return
+            
+            # MTCNN 배치 처리 호출
+            face_results = self.face_detector.process_image_batch(
+                pil_images, frame_metadata_list
             )
+            
+            # 결과를 face_queue에 추가
+            faces_in_batch = 0
+            for face_data in face_results:
+                try:
+                    # face_queue에 추가할 데이터 구성
+                    queue_data = {
+                        'face_image': face_data['face_image'],
+                        'frame_number': face_data['frame_number'],
+                        'timestamp': face_data['timestamp']
+                    }
+                    self.face_queue.put(queue_data)
+                    faces_in_batch += 1
+                    
+                except Exception as e:
+                    self.logger.warning(f"⚠️ 얼굴 데이터 큐 추가 실패: {e}")
+            
+            # 통계 업데이트
+            self.stats['frames_processed'] += len(frame_batch)
+            self.stats['faces_detected'] += faces_in_batch
+            
+            batch_time = time.time() - batch_start_time
+            
+            # 배치 단위 로깅
+            if self.config['logging']['batch_summary']:
+                self.logger.info(
+                    f"얼굴 탐지 배치: {len(frame_batch)}프레임 → {faces_in_batch}개 얼굴 "
+                    f"({batch_time:.2f}초)"
+                )
+        
+        except Exception as e:
+            self.logger.error(f"❌ 얼굴 탐지 배치 처리 실패: {e}")
+            # 실패 시에도 통계는 업데이트
+            self.stats['frames_processed'] += len(frame_batch)
     
     def _batch_classification_worker(self):
         """배치 분류 워커"""

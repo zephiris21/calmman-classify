@@ -5,7 +5,7 @@ video:
   frame_skip: 30              # 몇 프레임마다 처리할지 (30 = 1초에 1프레임 처리)
   chunk_duration: 600         # 청크 길이 (초) - 10분 단위
   default_directory: "yt_download/downloads"                  # 처리할 비디오 경로
-  default_filename: "직장인들이 사랑하는 생선구이 먹방.mp4"      # 처리할 비디오 파일명
+  default_filename: "시청자 취미 구경하기.mp4"      # 처리할 비디오 파일명
 
 # MTCNN 얼굴 탐지 설정  
 mtcnn:
@@ -20,7 +20,7 @@ classifier:
   framework: "pytorch"        # 프레임워크 지정
   model_path: "results/pytorch_efficientnet/models"  # 모델 디렉토리
   device: "cuda"              # GPU 사용
-  batch_size: 64              # 분류 배치 크기
+  batch_size: 192  # 분류 배치 크기
   batch_timeout: 5.0          # 배치 대기 시간 (초)
   min_batch_size: 1           # 최소 배치 크기 (타임아웃 시 처리)
   confidence_threshold: 0.9   # 킹받는 판정 임계값
