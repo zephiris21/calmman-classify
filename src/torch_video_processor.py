@@ -104,7 +104,7 @@ class TorchVideoProcessor:
         
         # 파일 핸들러 (옵션)
         if self.config['logging']['save_logs']:
-            log_dir = "logs"
+            log_dir = "results/video_processing/logs"
             os.makedirs(log_dir, exist_ok=True)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
