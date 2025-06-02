@@ -36,6 +36,28 @@ class TorchVideoProcessor:
         Args:
             config_path (str): 설정 파일 경로
         """
+        # PyTorch 설정 최적화 - CUDA 컨텍스트 영향 최소화
+        if torch.cuda.is_available():
+            # CUDA 할당자 최적화
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+            
+            # PyTorch 버전에 따른 안전한 CUDA 설정
+            try:
+                # JIT fusion 비활성화 시도 (버전에 따라 다를 수 있음)
+                if hasattr(torch, '_C'):
+                    if hasattr(torch._C, '_jit_set_nvfuser_enabled'):
+                        torch._C._jit_set_nvfuser_enabled(False)
+                
+                # CUDA 그래프 비활성화 (불필요한 최적화 방지)
+                if hasattr(torch.cuda, 'graph'):
+                    torch.cuda.graph.disable_compute_capability_caching()
+                
+                # 메모리 캐싱 정책 설정
+                if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
+                    torch.cuda.set_per_process_memory_fraction(0.7)  # GPU 메모리의 70%만 사용
+            except Exception as e:
+                print(f"CUDA 최적화 설정 중 경고 (무시됨): {e}")
+        
         # 설정 로드
         self.config = self._load_config(config_path)
         
@@ -143,27 +165,32 @@ class TorchVideoProcessor:
         """FaceNet 얼굴 인식 모델 초기화"""
         face_recog_config = self.config.get('face_recognition', {})
         
-        if not face_recog_config.get('enabled', False):
-            self.logger.info("⚠️ 얼굴 인식 비활성화됨")
+        # 얼굴 인식이 비활성화되었거나 테스트 모드인 경우 모델을 로드하지 않음
+        if not face_recog_config.get('enabled', False) or face_recog_config.get('test_mode', False):
+            mode_str = "비활성화됨" if not face_recog_config.get('enabled', False) else "테스트 모드"
+            self.logger.info(f"⚠️ 얼굴 인식 {mode_str} - 모델 로드 안함")
             self.facenet_model = None
             self.target_embedding = None
             return
         
         try:
-            # 디바이스 설정
-            device = torch.device(face_recog_config.get('device', 'cuda') 
-                                 if torch.cuda.is_available() else 'cpu')
+            # 명시적으로 CPU 문자열 대신 torch.device 객체 사용
+            cpu_device = torch.device('cpu')
             
-            # FaceNet 모델 로드
-            self.facenet_model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+            # FaceNet을 명시적으로 CPU에 로드
+            with torch.no_grad():
+                # 먼저 기본 디바이스에 로드한 후 CPU로 이동
+                self.facenet_model = InceptionResnetV1(pretrained='vggface2')
+                self.facenet_model = self.facenet_model.to(cpu_device).eval()
             
-            # 타겟 임베딩 로드
+            # 타겟 임베딩도 명시적으로 CPU로
             embedding_path = face_recog_config['embedding_path']
             if os.path.exists(embedding_path):
                 embedding_data = np.load(embedding_path, allow_pickle=True).item()
-                self.target_embedding = torch.tensor(embedding_data['embedding']).to(device)
+                # numpy 배열에서 텐서로 변환 후 CPU로 이동
+                self.target_embedding = torch.tensor(embedding_data['embedding']).to(cpu_device)
                 
-                self.logger.info(f"✅ 얼굴 인식 초기화 완료")
+                self.logger.info(f"✅ 얼굴 인식 초기화 완료 (명시적 CPU 디바이스)")
                 self.logger.info(f"   임베딩 파일: {embedding_path}")
                 self.logger.info(f"   사용된 이미지: {embedding_data['num_images']}개")
                 self.logger.info(f"   유사도 임계값: {face_recog_config['similarity_threshold']}")
@@ -171,9 +198,11 @@ class TorchVideoProcessor:
                 self.logger.error(f"❌ 임베딩 파일을 찾을 수 없습니다: {embedding_path}")
                 self.facenet_model = None
                 self.target_embedding = None
-                
+            
         except Exception as e:
             self.logger.error(f"❌ 얼굴 인식 초기화 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())  # 상세 오류 스택 출력
             self.facenet_model = None
             self.target_embedding = None
     
@@ -260,8 +289,8 @@ class TorchVideoProcessor:
                 img_tensor = (img_tensor - 127.5) / 128.0  # 정규화 [-1, 1]
                 resized_images.append(img_tensor)
             
-            # 배치 텐서 생성
-            batch_tensor = torch.stack(resized_images).to(self.target_embedding.device)
+            # 배치 텐서 생성 (facenet_model과 동일한 디바이스 사용)
+            batch_tensor = torch.stack(resized_images).to(self.facenet_model.device)
             
             # 임베딩 추출
             with torch.no_grad():
@@ -272,6 +301,8 @@ class TorchVideoProcessor:
             
         except Exception as e:
             self.logger.error(f"배치 임베딩 추출 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())  # 상세 오류 스택 출력
             return None
     
     def _calculate_similarities_batch(self, embeddings: torch.Tensor) -> torch.Tensor:
@@ -287,13 +318,23 @@ class TorchVideoProcessor:
         if embeddings is None or self.target_embedding is None:
             return None
         
-        # 타겟 임베딩을 배치 크기로 확장
-        target_expanded = self.target_embedding.unsqueeze(0).repeat(embeddings.size(0), 1)
-        
-        # 코사인 유사도 계산
-        similarities = F.cosine_similarity(embeddings, target_expanded)
-        
-        return similarities
+        try:
+            # 계산을 위해 임베딩과 타겟이 같은 디바이스에 있어야 함
+            device = embeddings.device
+            target_embedding = self.target_embedding.to(device)
+            
+            # 타겟 임베딩을 배치 크기로 확장
+            target_expanded = target_embedding.unsqueeze(0).repeat(embeddings.size(0), 1)
+            
+            # 코사인 유사도 계산
+            similarities = F.cosine_similarity(embeddings, target_expanded)
+            
+            return similarities
+        except Exception as e:
+            self.logger.error(f"유사도 계산 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())  # 상세 오류 스택 출력
+            return None
     
     def process_video(self, video_path: str) -> Dict:
         """
@@ -495,8 +536,12 @@ class TorchVideoProcessor:
                 pil_images, frame_metadata_list
             )
             
-            # 얼굴 인식 활성화된 경우 필터링 수행
-            if self.config.get('face_recognition', {}).get('enabled', False) and self.facenet_model is not None:
+            # 원본 탐지 결과의 얼굴 수 저장 (로깅용)
+            total_detected = len([r for r in face_results if 'face_image' in r])
+            
+            # 얼굴 인식 활성화 + 모델 로드된 경우에만 필터링 수행
+            # FaceNet 모델이 None이 아닌 경우에만 얼굴 인식 수행 (테스트 모드는 이미 None으로 설정됨)
+            if self.facenet_model is not None:
                 face_results = self._filter_faces_by_recognition(face_results)
             
             # 결과를 face_queue에 추가
@@ -517,15 +562,15 @@ class TorchVideoProcessor:
             
             # 통계 업데이트
             self.stats['frames_processed'] += len(frame_batch)
-            self.stats['faces_detected'] += len([r for r in face_results if 'face_image' in r])
+            self.stats['faces_detected'] += total_detected
             
             batch_time = time.time() - batch_start_time
             
             # 배치 단위 로깅
             if self.config['logging']['batch_summary']:
                 recognition_info = ""
-                if self.config.get('face_recognition', {}).get('enabled', False):
-                    total_detected = len([r for r in self.face_detector.process_image_batch(pil_images, frame_metadata_list) if 'face_image' in r])
+                # 얼굴 인식 모델이 로드된 경우에만 필터링 정보 계산
+                if self.facenet_model is not None:
                     filtered = total_detected - faces_in_batch
                     recognition_info = f" (인식 후: {faces_in_batch}개, 필터링: {filtered}개)"
                 
@@ -549,7 +594,13 @@ class TorchVideoProcessor:
         Returns:
             List[Dict]: 필터링된 얼굴 결과
         """
+        # 모델이 로드되지 않았거나 결과가 없으면 필터링 없이 반환
         if not face_results or self.facenet_model is None:
+            return face_results
+        
+        # 테스트 모드 확인 (설정 파일에서 test_mode가 true면 필터링 건너뜀)
+        if self.config.get('face_recognition', {}).get('test_mode', False):
+            self.logger.info("🧪 얼굴 인식 테스트 모드: 필터링 건너뜀")
             return face_results
         
         try:
@@ -605,6 +656,8 @@ class TorchVideoProcessor:
             
         except Exception as e:
             self.logger.error(f"❌ 얼굴 인식 필터링 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())  # 상세 오류 스택 출력
             return face_results  # 실패 시 원본 반환
     
     def _save_filtered_face(self, face_data: Dict, similarity: float):
@@ -764,9 +817,9 @@ class TorchVideoProcessor:
                 avg_batch_time = (self.stats['total_inference_time'] / self.stats['batch_count'] 
                                  if self.stats['batch_count'] > 0 else 0)
                 
-                # 얼굴 인식 통계 추가
+                # 얼굴 인식 통계 추가 (모델이 로드된 경우에만)
                 recognition_info = ""
-                if self.config.get('face_recognition', {}).get('enabled', False):
+                if self.facenet_model is not None:
                     recognition_rate = (self.stats['faces_recognized'] / max(1, self.stats['faces_detected'])) * 100
                     avg_recognition_time = (self.stats['total_recognition_time'] / max(1, self.stats['batch_count']))
                     recognition_info = f", 인식률: {recognition_rate:.1f}%, 인식시간: {avg_recognition_time:.3f}초"
@@ -821,8 +874,8 @@ class TorchVideoProcessor:
         self.logger.info(f"   처리된 프레임: {self.stats['frames_processed']}개 ({fps:.1f} FPS)")
         self.logger.info(f"   탐지된 얼굴: {self.stats['faces_detected']}개")
         
-        # 얼굴 인식 통계 출력
-        if self.config.get('face_recognition', {}).get('enabled', False):
+        # 얼굴 인식 통계 출력 (모델이 로드된 경우에만)
+        if self.facenet_model is not None:
             recognition_rate = (self.stats['faces_recognized'] / max(1, self.stats['faces_detected'])) * 100
             avg_recognition_time = (self.stats['total_recognition_time'] / max(1, self.stats['batch_count']))
             self.logger.info(f"   인식된 얼굴: {self.stats['faces_recognized']}개 ({recognition_rate:.1f}%)")
