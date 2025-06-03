@@ -94,8 +94,7 @@ class FaceDetector:
     
     def align_face_by_eyes(self, img_array, landmarks):
         """
-        눈 위치 기준 얼굴 정렬
-        
+        눈 위치 기준 얼굴 정렬                                                                                                                                                                                                                                  
         Args:
             img_array (numpy.ndarray): 이미지 배열 (H, W, 3)
             landmarks (numpy.ndarray): 얼굴 랜드마크 좌표 (5, 2)
