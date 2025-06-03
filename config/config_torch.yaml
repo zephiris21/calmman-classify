@@ -4,7 +4,7 @@
 video:
   frame_skip: 30              # 몇 프레임마다 처리할지 (30 = 1초에 1프레임 처리)
   default_directory: "yt_download/downloads"                  # 처리할 비디오 경로
-  default_filename: "시청자 취미 구경하기.mp4"      # 처리할 비디오 파일명
+  default_filename: "직장인들이 사랑하는 생선구이 먹방.mp4"      # 처리할 비디오 파일명
 
 # MTCNN 얼굴 탐지 설정  
 mtcnn:
