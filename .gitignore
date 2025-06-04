@@ -34,18 +34,18 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# 데이터 파일 (용량이 큰 경우)
-data/raw/
-data/processed/teasing/
-data/processed/non_teasing/
-data/processed/test_image/
-*.jpg
-*.jpeg
-*.png
-*.bmp
-*.tiff
-*.webp
-*.gif
+# # 데이터 파일 (용량이 큰 경우)
+# data/raw/
+# data/processed/teasing/
+# data/processed/non_teasing/
+# data/processed/test_image/
+# *.jpg
+# *.jpeg
+# *.png
+# *.bmp
+# *.tiff
+# *.webp
+# *.gif
 
 # 훈련된 모델 파일
 models/*.h5
