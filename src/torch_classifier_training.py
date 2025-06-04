@@ -276,7 +276,7 @@ def load_images_robust(folder_path, label, max_images=None):
     return images, labels
 
 # 데이터 경로 설정 (기존과 동일)
-base_path = r'D:\my_projects\calmman-facial-classification\data\processed'
+base_path = 'data/processed'
 teasing_path = os.path.join(base_path, 'teasing')
 non_teasing_path = os.path.join(base_path, 'non_teasing')
 
